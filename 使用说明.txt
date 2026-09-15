@@ -1,0 +1,573 @@
+================================================================================
+  Touhou Runtime Doctor  --  东方 Project 运行环境一键体检修复工具
+  使用说明
+================================================================================
+
+【它是什么】
+
+一个针对东方 Project 系列（尤其是东方永夜抄 th08）老游戏"启动不了 / 黑屏 /
+花屏 / 乱码 / 掉帧"问题的体检与修复工具。
+
+它的核心判断依据不是"猜东方需要什么运行库"，而是【直接解析游戏程序的 PE
+导入表】，读出它真正链接了哪些 DLL，再逐个到系统里核对。这一点很关键：
+
+    th06 ~ th09 （红魔乡 / 妖妖梦 / 永夜抄 / 花映塚）是 DirectX 8 世代作品，
+    它们导入的是 d3d8.dll，根本不导入任何 d3dx9_*.dll。
+
+    所以网上常见的"装个 DirectX 9 就好了"对永夜抄是无效的 —— DirectX 9
+    不会再分发 DirectX 8 的独立运行时。必须用 DirectX 完整运行库包补齐。
+
+【系统要求】
+
+  Windows 版本：Windows 7 SP1 及以上（含 Windows 8 / 8.1 / 10 / 11）
+                Windows 7 必须打 SP1，否则运行库安装包会拒绝安装。
+  系统位数    ：32 位与 64 位都支持（详见"在 32 位系统上"一节）
+  PowerShell  ：3.0 以上，建议 5.1
+                Windows 7 出厂只自带 PowerShell 2.0，需要自行安装
+                Windows Management Framework 5.1
+                （前置条件：Windows 7 SP1 + .NET Framework 4.5.2 以上）
+
+  不确定自己的机器行不行？直接双击「自检.bat」。它会实测工具所需的每一项
+  能力（注册表读写、哈希、解压、WMI、PE 解析、备份还原……），
+  直接告诉你哪些可用、哪些不可用，不会碰游戏也不会改系统。
+
+【三步上手】
+
+  1. 首次使用（在能上网的机器上做一次，把弹药装进工具）
+
+        如果只是想在当前这台机器上体检/修复，而它有网络：
+
+            双击：  一键修复.bat
+
+        工具只会在需要装运行库时才去找载荷；没有载荷它会明确告诉
+        你缺哪个包和官方下载地址，不会静默失败。
+
+        如果是给一台离线机器准备：
+
+            双击运行 tools\Fetch-OfflinePack.ps1（右键 → 使用 PowerShell 运行）
+            或命令行：
+            powershell -ExecutionPolicy Bypass -File tools\Fetch-OfflinePack.ps1 -All
+
+        下载总量约 196 MB，全部是微软官方 / 开源项目官方地址。
+        下载完会自动把每个文件的 SHA256 写入 offline\packages.json，
+        并对微软来源的文件校验数字签名。
+
+  2. 把整个工具目录拷到目标机器（U 盘即可），先跑一次「自检.bat」确认环境，
+     然后
+
+        双击：  一键修复.bat
+
+     它会自动请求管理员权限，然后依次执行：体检 → 修复 → 真机启动验证 → 出报告。
+     全程不再需要联网。
+
+  3. 如果修完还有问题，或想撤销
+
+        双击：  修复报告.html     查看完整报告（含每一条结论的证据）
+        双击：  回滚.bat          撤销最近一次修复的全部改动
+
+【五个入口的区别】
+
+  一键修复.bat    体检 + 修复 + 启动验证。需要管理员权限（会自动弹 UAC）。
+  仅体检.bat      只读体检，不改动任何东西，随时可以跑，不需要管理员权限。
+  自检.bat        实测工具自身能力，回答"这台机器能不能用"。免提权。
+  设备信息.bat    只读采集全机设备与系统信息，输出四种格式。免提权（提权更全）。
+  回滚.bat        从最近一次的备份会话恢复文件和注册表。
+
+【设备信息采集（设备信息.bat）】
+
+  这是一个独立的、纯只读的采集程序，用来"全面了解这台机器到底是什么配置"。
+  它不碰游戏、不改系统、不装任何东西，可以随时放心运行。
+
+  输出四种格式到「报告」文件夹：
+
+     设备信息.txt        完整报告（GBK 编码，记事本直接双击可读）
+                         分 17 个章节，从主板 BIOS 一直列到 USB 设备
+     设备信息-精简.txt    一屏以内的摘要
+                         适合发到论坛 / 群里求助，别人一眼就能看懂你的配置
+     设备信息.html       带表格与配色，适合快速扫读、截图
+     设备信息.json       结构化数据，适合跨机器对比或做二次处理
+                         （特意保留中文原字符，不是 \uXXXX 转义，人能直接读）
+
+  采集范围（17 个章节）：
+
+     系统概览      计算机名、制造商、型号、机箱类型、序列号、工作组
+     操作系统      版本、内部版本、体系结构、SP、安装日期、运行时长、
+                   系统区域代码页、时区、内存总量
+     主板与 BIOS   主板厂商型号、BIOS 版本与日期、引导模式(UEFI/BIOS)、安全启动
+     处理器        型号、架构、核心/线程、频率、插槽、缓存明细（已去重）、
+                   硬件虚拟化支持
+     内存          总容量、插槽使用情况、每槽容量/频率/类型/厂商/型号/序列号、
+                   页面文件
+     显卡与显示    型号、显存、驱动版本与日期、设备状态与错误码、
+                   ★ 真实枚举显卡驱动提供的全部显示模式（是否含 640×480）
+     显示器        EDID 解析出的厂商、型号、物理尺寸（英寸）、生产日期、连接方式
+     存储设备      物理盘型号/容量/接口(NVMe/SATA)/介质(SSD/HDD)/健康状态/序列号、
+                   各分区容量与使用率
+     音频设备      设备清单与状态、Windows Audio 服务状态
+     网络适配器    MAC、IP、网关、DNS、链路速率、连接状态、驱动版本
+     ★ 有问题的设备  所有 ConfigManagerErrorCode ≠ 0 的设备，并翻译成中文含义
+                     （例如"错误码 28：设备的驱动程序未安装"）
+     输入设备      键盘、指针设备（含触摸板/触摸屏识别）
+     电源与电池    电源计划、电池化学类型、电量、★ 电池健康度
+     温度与风扇    温度探针、风扇状态
+     运行库        DirectX 版本、各组件、VC++ 各版本状态、.NET Framework
+     关键服务      Windows Audio / Windows Installer / WMI / 事件日志等，
+                   ★ 区分"已停止（正常）"与"被禁用（故障）"
+     安全软件      已注册的杀软（含第三方），以及可能干扰游戏的常驻进程
+     系统补丁      已安装的 KB 补丁与日期
+     USB 设备      按设备类别分组列出
+
+  带 ★ 的几项是排查运行问题时最有价值的：它们直接回答"是不是设备/驱动的问题"。
+
+  采集完成后会在控制台直接打印一份摘要，并把真正需要留意的项目单独列出来
+  （驱动异常、音频服务停用、缺少 640×480 模式、关键服务被禁用、
+    第三方杀软、磁盘快满等）。
+
+  管理员权限下能取到更完整的信息（显示器 EDID、部分磁盘健康状态等）。
+  发现某些字段为空时，右键「设备信息.bat」以管理员身份重跑即可。
+
+【与 DirectX Repair 的关系（tools\Complete-DirectXRepair.ps1）】
+
+  DirectX Repair（zhangyue667@263.net 的作品）是国内修 DirectX 问题最常用的
+  工具，它有两个本工具没有的长处，现在已经吸收进来：
+
+    * 完整的 111 项 DirectX 组件清单（本工具早期只看 36 项）
+    * Direct3D / DirectDraw 硬件加速开关的检测与开关
+    * 把缺失组件部署到系统目录的做法（本工具原本只部署到游戏目录，
+      现作为显式动作提供，带位数校验、签名校验、逐文件备份）
+
+  反过来，实测发现多数人手上的 DirectX Repair 是【标准版】，
+  它内部通过联网下载"数据包"才能升级为【增强版】并获得 C++ 运行库修复能力。
+  程序自身的文案即为证：「界面将程序扩展至增强版。另外，您也可以前往以下
+  网页手动下载增强版程序：」「您的程序已经是增强版且包含完整的C++数据包，
+  无需扩展！」
+
+  标准版缺失的具体文件（实测）：
+
+    Data\C\            C++ 运行库安装包，整个目录缺失 —— 18 个文件
+                       （cp05/cp08/cp10/cp12/cp13/cp15，每个都有 x64 与 x86）
+    Data\A\xinput*.dll x86 侧缺 xinput1_1 / 1_2 / 1_3 / 9_1_0
+    Data\B\xinput*.dll x64 侧缺 xinput1_1 / 1_2 / 1_3 / 9_1_0
+    Data\A\XAudio2_4.dll   只有 cab 没有 dll
+    Data\B\XAudio2_0.dll   只有 cab 没有 dll
+    Data\B\XAudio2_4.dll   只有 cab 没有 dll
+
+  本工具提供一个补全脚本，用【已经校验过 SHA256 的官方离线载荷】在本地补齐，
+  全程不需要联网：
+
+    powershell -ExecutionPolicy Bypass -File tools\Complete-DirectXRepair.ps1 ^
+               -DataRoot "G:\other\Data"
+
+  它会做四件事：
+    1. 用 DirectX Repair 自带的 cab 解出那 3 个只有 cab 没有 dll 的文件
+    2. 从官方 DirectX Jun2010 运行库补齐 A/B 缺失的组件（实测补 11 个）
+    3. 逐个校验 A/B 中【已有】文件的数字签名，凡无效的用官方版本替换
+       （实测发现它自带的 Data\A\XAudio2_0.dll 只有 160KB 且无签名，
+         而官方版本是 479KB 且微软签名 —— 这个未签名文件会被部署到系统目录，
+         属于必须纠正的安全隐患）
+    4. 建立 Data\C，放入 18 个 C++ 运行库安装包
+
+  安全性：所有写入的 DLL 都通过 PE 位数校验与 Authenticode 签名校验；
+  只往 DirectX Repair 自己的 Data 目录写，不碰系统目录；支持 -WhatIf 演练。
+
+  补全后 Data 目录的规模：A(x86) 92 个 DLL / B(x64) 92 个 DLL / C 18 个文件，
+  共 207 个文件，全部通过微软签名校验。
+
+  另外，本工具可以直接把 DirectX Repair 的 DLL 库当作部署来源：
+
+    powershell -ExecutionPolicy Bypass -File Run.ps1 -DirectXRepairDataRoot "G:\other\Data"
+
+【打包与分发（tools\Build-Package.ps1）】
+
+  提供了可复现的打包脚本，产出两个包：
+
+    TouhouRuntimeDoctor-<版本>-lite.zip    约 0.15 MB
+        仅工具本体。给能联网的机器用，或你已另有一份离线载荷。
+        解压后先跑 tools\Fetch-OfflinePack.ps1 把运行库抓下来。
+
+    TouhouRuntimeDoctor-<版本>-full.zip    约 200 MB
+        含完整离线载荷（DirectX 2010 年 6 月完整运行库、VC++ 2005~2022 的
+        x86/x64、dgVoodoo2、Locale Emulator）。给完全离线的机器用，
+        拷过去解压就能修，全程不联网。
+
+    SHA256SUMS.txt  两个包的 SHA256 校验值
+
+  用法：
+
+    powershell -ExecutionPolicy Bypass -File tools\Build-Package.ps1
+    powershell -ExecutionPolicy Bypass -File tools\Build-Package.ps1 -LiteOnly
+    powershell -ExecutionPolicy Bypass -File tools\Build-Package.ps1 -FullOnly -KeepStaging
+
+  打包时会自动排除：
+    backup\   每次运行的备份与回滚日志（属于本机历史）
+    报告\     采集到的设备信息（可能含序列号等隐私）
+    dist\     打包产物自身，避免递归
+    *.log     运行日志
+
+  目标机器上校验完整性：
+
+    Get-FileHash TouhouRuntimeDoctor-1.0.0-full.zip -Algorithm SHA256
+    （与 SHA256SUMS.txt 中的值比对）
+
+【在 32 位系统上（Windows 7 32 位 / 任何 x86 Windows）】
+
+  工具支持 32 位系统，但有几处与 64 位系统本质不同，这里说清楚：
+
+  * 32 位系统上不存在"补位数"的问题。东方全系列都是 32 位程序，
+    在 32 位系统上它们直接在 System32 里加载运行，没有 WOW64 转换层，
+    反而少了一层兼容性风险。工具也不会再建议你安装 x64 运行库
+    （会明确标记为"不适用"）。
+
+  * 目录含义不同：64 位系统上 32 位 DLL 在 SysWOW64；而 32 位系统上
+    32 位 DLL 就在 System32，SysWOW64 目录根本不存在。
+    工具内部用统一的映射函数处理，不会因此误判组件缺失。
+
+  * 内存上限：32 位进程最多用 2GB。东方系列本身占用很小，不受影响。
+
+  * 显卡驱动：Windows 7 时代的驱动对 DirectX 8/9 的支持通常比新系统更好，
+    黑屏花屏的概率反而更低。dgVoodoo2 需要显卡支持 DirectX 11，
+    在 32 位 Win7 的老机器上未必能用 —— 它是最后手段，不是必需项。
+
+  * 如果自检报告 PowerShell 版本过低（2.0），请按顺序安装：
+        Windows 7 Service Pack 1 (KB976932)
+        .NET Framework 4.5.2 或更高
+        Windows Management Framework 5.1
+    装完重启，再跑「自检.bat」。
+
+【它会检查什么】
+
+一、依赖完整性（核心）
+    - 解析游戏目录内所有 exe/dll 的 PE 导入表，逐个核对能否加载
+    - 区分"静态导入"（加载器必然解析，缺失即致命）与"二进制字符串线索"
+      （只是启发式线索，可能根本不会被加载，仅列作参考）
+    - 识别游戏目录里位数不符的 DLL —— 这是 0xC000007B 的头号元凶，
+      而 Windows 对此不会给出任何提示
+    - 识别目录内旧 DLL 遮蔽系统新 DLL 的情况
+
+二、DirectX 运行时
+    - 按作品世代分别检查 DirectX 8 组件（d3d8.dll / d3d8thk.dll / ddraw.dll）
+      与 DirectX 9 扩展库（d3dx9_24~43 / D3DCompiler_33~43 / XAudio2 / XInput）
+    - 读取注册表版本作为佐证（按正确字节序解析 InstalledVersion）
+    - 完整组件清单：覆盖 111 个 DirectX 组件（Direct3D 8/9/10/11/12、
+      DirectDraw、DirectInput、DirectSound、D3DX9 全 20 个版本、D3DX10/11、
+      D3DCompiler 全系列、XAudio2 0~7、X3DAudio、XACT、XInput 全系列），
+      比早期版本只看 36 项全面得多
+    - Direct3D / DirectDraw 硬件加速开关检查：SoftwareOnly / EmulationOnly
+      被误设为 1 时，运行库检查会全部通过，但 3D 游戏要么极慢要么直接起不来。
+      这是从依赖角度完全查不出的一类故障，必须单独查注册表开关。
+      同时检查原生视图与 WOW6432Node（32 位程序读后者）
+
+三、Visual C++ 运行库
+    - 覆盖 2005 / 2008 / 2010 / 2012 / 2013 / 2015-2022，x86 与 x64 分别判定
+    - 三路取证：注册表卸载项 + 系统目录 DLL + WinSxS 并行程序集
+      （VC2005/2008 走 WinSxS 部署，只查 system32 必然误报"未安装"）
+    - 由 PE 导入表反推"这台机器真正需要的"版本，而不是无脑全装
+    - 32 位系统上 x64 运行库标记为"不适用"，不会误报缺失
+
+四、区域与编码
+    - 系统 ANSI 代码页 vs 游戏文本编码（汉化版需 GBK/936，日文原版需 Shift-JIS/932）
+    - 检测"Beta: 使用 Unicode UTF-8 提供全球语言支持"—— 这是老游戏乱码的头号原因
+
+五、路径与目录
+    - 非 ASCII 路径（中文/日文/方括号）对老引擎 ANSI 路径解析的影响
+    - 目录可写性（游戏要把存档和配置写在自身目录）
+    - 路径过长、磁盘空间
+
+六、显示与兼容性
+    - 高 DPI 缩放未声明 DPI 感知导致的画面模糊与鼠标坐标偏移
+    - 渲染相关兼容标记按系统世代自动选择：
+        Windows 7 ：DISABLEDWM（关桌面窗口管理器组合）
+        Windows 8+：DISABLEDXMAXIMIZEDWINDOWEDMODE（关"全屏优化"）
+      在 Win7 上写"全屏优化"标记是无效的，工具不会犯这个错。
+    - 兼容性标记必须覆盖目录内【全部】exe —— 实际启动器是 vpatch.exe，
+      只给 th08.exe 打标记会导致通过 vpatch 启动时修正不生效
+
+七、文件安全标记
+    - "来自 Internet"标记（Zone.Identifier）触发 SmartScreen 拦截
+    - Defender 实时扫描造成的周期性卡顿
+      （Defender 命令行接口是 Windows 8+ 才有的，Win7 上本项自动跳过，不报错）
+
+八、启动方式与配置
+    - 检测 vpatch（vsync 补丁）并生成以它启动的入口 —— 直接双击 th08.exe
+      会绕过帧率补丁与汉化补丁
+    - th08.cfg 显示配置异常检测与安全重置
+
+九、其他
+    - 运行能力检查：64 位系统上是否缺 32 位子系统 / 32 位系统正常识别
+    - Windows 7 是否打了 SP1
+    - PowerShell 版本与降级情况
+    - 日文字体、.NET Framework 4.x
+    - 可用物理内存
+
+十、显卡与驱动（"运行库全对但跑不起来"的高发区）
+    - 是否跑在"Microsoft 基本显示适配器 / 标准 VGA"这类通用兜底驱动上。
+      这种状态下没有任何 3D 加速，Direct3D 设备无法建立，游戏一定跑不起来，
+      而且装再多 DirectX 也没用。这是本工具判定为"严重"的一类。
+    - 设备状态与 ConfigManagerErrorCode（驱动未装 / 已停止 / 资源冲突）
+    - 驱动日期与年龄（老驱动对 DX8/9 兼容性通常更好，但可能有已知稳定性问题）
+    - 真实枚举显卡驱动提供的全部显示模式，检查是否包含该游戏全屏默认需要的
+      640×480。部分较新驱动已不再列出这些老模式，会导致全屏初始化失败。
+      枚举方式是调用系统 API 实测，不是估算。
+
+十一、音频
+    - 是否存在可用的音频输出设备（虚拟机、声卡驱动缺失时没有）
+    - Windows Audio 服务是否在运行。东方系列通过 DirectSound 初始化音频，
+      音频服务被"系统优化"工具关掉时，游戏常在启动阶段就卡住或直接退出，
+      表现是"点了没反应"，极难联想到音频服务。
+
+十二、安装能力（"修了却没效果"的元凶）
+    - Windows Installer 服务是否被禁用。VC++ / DirectX 运行库都靠 MSI 部署，
+      服务被禁用时安装会静默失败，用户看到的是"修复跑完了但什么都没变"。
+      注意该服务处于"已停止"是正常的（手动触发），被"禁用"才是问题。
+    - 组策略 DisableMSI 是否禁止了安装
+
+十三、冲突软件
+    - 第三方安全软件（360 / 火绒 / 腾讯管家等）。汉化版 exe 被它们误报隔离
+      是"游戏突然消失打不开"的头号原因，而且往往不通知用户。
+    - 变速/加速工具、画面覆盖层、虚拟手柄驱动等会向游戏进程注入代码的常驻程序
+    - 输入法进程（中文输入法在独占全屏下可能导致输入丢失，东方系列尤其明显）
+
+十四、游戏文件完整性
+    - 主数据包（如 th08.dat）与音乐包 thbgm.dat 是否存在
+    - 体量是否明显异常（被安全软件"清除内容"的文件会保留文件名但大小骤降，
+      光看"文件是否存在"查不出来）
+    - 游戏是否位于 Program Files 下、写入是否正被 UAC 虚拟化重定向到
+      VirtualStore（表现为"设置改了不生效""存档不保存"）
+
+【输入子系统诊断（专治"键盘暴走"）】
+
+  症状：游戏打开后持续不断的错误键值输入（菜单自己乱滚、角色自己移动）。
+  这类问题不在依赖层面，必须按输入栈自下而上逐层查。工具会检查：
+
+    IME / 键盘布局  ★ 最高发
+        中文输入法处于活动状态时会参与按键处理并持续产生输入，独占全屏下尤其
+        明显 —— 这就是社区常说的"启动前先切英文输入法"。
+        但这里有个常被忽略的前提：**系统里必须真的装了英文键盘布局**。
+        只装中文键盘的系统根本切不出去，于是"切英文"这个解法失效，
+        表现为怎么弄都暴走。工具会明确检出这种情况并提供添加英文布局的修复。
+    Direct3D/DD 加速 见上文
+    辅助功能键
+        粘滞键 / 筛选键 / 切换键 / 鼠标键。筛选键会把一次按键变成连续输入，
+        粘滞键会让修饰键"粘住"。判定看 Flags 的最低位（ON 标志），
+        不能看整个值是否非 0 —— 实测四个键的 Flags 分别是 122/506/62/62，
+        全都非 0 但最低位都是 0，也就是其实都关着。
+    内核级键盘重映射 (Scancode Map)
+        能把任意物理键映射成别的键。写坏时"按 A 出 B"或"某键一直按下"。
+    键盘/鼠标类过滤驱动
+        第三方驱动挂在输入栈上就能改写每个按键。判定按【驱动文件的数字签名
+        是否微软签发】来做，而不是硬编码白名单 —— 实测鼠标类的 UpperFilters
+        是 hrdevmon,ksthunk，两者都不是 mouclass，按白名单会把正常机器报成
+        故障。
+    输入设备枚举
+        多个键盘、虚拟/转换键盘设备（如 BUTTONCONVERTER\CONVERTEDDEVICE）、
+        蓝牙 HID、以及**游戏手柄**。手柄摇杆漂移是"菜单持续滚动"的头号原因，
+        而用户常误认为是键盘问题（东方同时读键盘和手柄）。
+    键盘重复率
+        速度 31 + 延迟 0/1 是最快重复，会把"某个键卡住"放大成输入洪水。
+    DirectInput 按程序配置
+        UsesMapper=1 时 DINPUT 会按用户配置改写按键含义，映射坏了按键就全不对。
+    注入了输入的常驻程序
+        宏工具 / 远程控制 / 虚拟手柄 / 外设驱动套件。
+   显示时序
+        高刷显示器上没有正确限帧时，一次按键会被多帧重复采样，表现为按键连发。
+        工具会交叉检查刷新率与 vpatch 的 GameFPS 设置。
+
+  另外，工具会把输入子系统的**原始数据导出为 JSON 快照**（放在「报告」目录），
+  供后续做插件或二次分析使用 —— 报告面向人，快照面向程序。快照包含：
+  Ime / Accessibility / KeyboardRepeat / FilterDrivers / ScancodeMap /
+  Devices / DirectInput / Interference / Timing 九个部分。
+
+【它是怎么验证"真的修好了"的】
+
+修完不是看命令返回码，而是【真的把游戏拉起来看一眼】：
+
+    - 启动 vpatch.exe，并跟踪它拉起的子进程 th08.exe
+      （vpatch 是把游戏作为子进程启动的，只看启动器是否存活会误判）
+    - 检测窗口句柄与窗口标题，成功时能看到「东方永夜抄 ～ Imperishable Night」
+    - 进程秒退时读取 NTSTATUS 退出码精确归因：
+          0xC0000135  找不到 DLL
+          0xC000007B  位数不符 / 镜像损坏
+          0xC0000142  DLL 初始化失败
+          0xC0000139  找不到入口点（DLL 版本过旧）
+          0xC0000005  访问违例（多为显卡/兼容层，建议上 dgVoodoo2）
+    - 验证结束自动关闭测试进程；如果你本来就开着游戏，它会跳过验证不打扰你
+
+【安全性与可回滚】
+
+  * 任何文件改动与注册表写入之前，一律先备份到 backup\<时间戳>\
+  * 注册表改动采用【逐值记录修改前状态】：原本不存在就删除，原本存在就写回
+    原值与原类型。只做整体 export/import 是不够的 —— reg import 只能合并覆盖，
+    删不掉修复过程中新增的值，那样"回滚"会留下残留。
+  * 所有改动记入该目录下的 journal.json，双击「回滚.bat」即可整体撤销
+  * 涉及系统目录的 DLL 修复采用"部署到游戏目录"而非覆盖系统文件：
+    既绕开 Windows 文件保护，又天然只影响这一个游戏，删除即还原
+  * 会改变渲染/区域/路径的动作（dgVoodoo2、Locale Emulator、路径迁移）
+    默认不自动执行，需要显式开关
+  * 想先看要做什么而不实际动手：加 -DryRun
+
+【常见问题】
+
+Q: 32 位的 Windows 7 能用吗？
+A: 可以，但要先满足两个前提：
+   1) Windows 7 必须打过 SP1；
+   2) 安装 PowerShell 3.0 以上（建议 WMF 5.1）。
+   出厂状态的 Win7 只有 PowerShell 2.0。这种情况下工具会明确提示版本过低
+   并给出安装步骤，而不是抛出一堆看不懂的参数错误。
+   装好之后双击「自检.bat」确认，再双击「一键修复.bat」。
+   注：工具已内置哈希 / 解压 / 深度遍历的降级实现，不强制要求 5.1。
+
+Q: 运行库都装齐了，游戏还是跑不起来，还可能是什么原因？
+A: 这正是本工具"驱动与设备"那一整块在查的东西，常见的有：
+   1) 显卡跑在通用显示适配器上（没装厂商驱动）—— Direct3D 设备根本无法建立，
+      装多少 DirectX 都没用。工具会把它判为"严重"。
+   2) Windows Audio 服务被"优化"工具关掉 —— DirectSound 初始化失败，
+      游戏启动阶段就退出，表现是"点了没反应"。
+   3) 显卡驱动不再提供 640×480 模式 —— 全屏初始化失败。工具会实测枚举模式。
+   4) Windows Installer 服务被禁用 —— 运行库装不上，表现为"修了没效果"。
+   5) 第三方杀软把汉化版 exe 或数据文件隔离/清空 —— 工具会检查数据文件体量。
+   6) 变速齿轮、画面覆盖层、录制工具注入游戏进程 —— 老引擎经常直接崩溃。
+   以上这些工具都能检测并给出具体处理办法。但确实还有它查不到的：
+   硬件故障（内存/硬盘坏道）、显示器与线缆的实际能力、
+   特定显卡型号的驱动 bug（只能靠启动验证失败后反推）、
+   以及汉化补丁自身的缺陷。报告里"需要手动完成"的部分就是这些。
+
+Q: 为什么工具说"缺 DirectX 8 组件"，我明明装了 DirectX 12？
+A: DirectX 12 不含 DirectX 8 的独立运行时。Windows 7 / 8 / 8.1 通常自带
+   d3d8.dll，而 Windows 10 / 11 的精简版系统常常没有。需要用 DirectX
+   2010 年 6 月完整运行库补齐。
+
+Q: 为什么工具说 VC2005/2008 已安装，可我 system32 里找不到 msvcr80.dll？
+A: 因为 VC2005/2008 通过 WinSxS 并行程序集部署，本来就不在 system32。
+   工具同时查了注册表、系统目录和 WinSxS 三处，所以判定是准的。
+
+Q: 为什么它报了一堆我没听过的 DLL？
+A: 分两类。标为"严重"的来自 PE 导入表，是加载器必然要解析的，确实必须补。
+   标为"低"的来自二进制字符串扫描，只是线索 ——
+   例如 d3d8d.dll 是 d3d8.dll 的调试版名字，会残留在发布版文件里但运行时并不加载。
+   工具已经把这类调试版噪音自动过滤掉了，剩下的仅作参考。
+
+Q: 报告里有一项"路径包含非 ASCII 字符"，一定要改吗？
+A: 不必。只要系统区域代码页和路径编码一致（中文系统 + 中文路径）就没问题。
+   这项是"中"级提示，仅在乱码/黑屏且其他原因都排除后才需要考虑迁移。
+   迁移是复制而不是移动，原目录不动，可以随时放弃。
+
+Q: 离线机器上怎么用？
+A: 在有网的机器上跑一次 tools\Fetch-OfflinePack.ps1 -All，
+   然后把整个工具目录拷过去。工具永远优先使用 offline\ 里的实体文件，
+   不会尝试联网。
+
+【命令行参数（进阶）】
+
+  powershell -ExecutionPolicy Bypass -File Run.ps1 [选项]
+
+    -Mode Auto        体检 + 修复 + 验证（默认）
+    -Mode Detect      只体检
+    -Mode Repair      体检 + 修复，不做启动验证
+    -Mode Verify      只做启动验证
+    -Mode SelfTest    环境自检（工具自身能力实测）
+    -Mode SysInfo     采集全机设备信息，输出 txt/html/json/精简 四种格式
+    -Mode SysInfoBrief  只输出精简摘要
+    -Mode SysInfoJson  只输出 JSON
+    -Mode ListGames   只列出找到的东方游戏
+    -Mode Rollback    回滚最近一次修复
+
+    -GamePath <目录>  指定游戏目录
+    -GameId th08      本机有多个作品/多份安装时指定其一
+    -DryRun           演练，只显示将要做什么
+    -SkipSmokeTest    跳过启动验证
+    -KeepRunning      验证通过后保留游戏进程不关闭
+    -IncludeOptional  一并补齐整机缺失的 VC 运行库、加 Defender 排除项
+    -IncludeRisky     允许执行改变渲染/区域/路径的动作
+    -MigrateTargetRoot D:\TouhouGames   路径迁移的目标根目录
+    -DirectXRepairDataRoot <目录>  指定 DirectX Repair 的 Data 目录，
+                                   可直接复用它的 DLL 库作为组件部署来源
+    -OutDir <目录>    设备信息报告输出目录（默认 <工具目录>\报告）
+    -OpenReport       设备信息采集完成后自动打开 HTML 报告
+    -NoPause          结束时不等待回车（便于脚本调用）
+
+  例：
+    powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode SelfTest
+    powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode Detect -GameId th07
+    powershell -ExecutionPolicy Bypass -File Run.ps1 -DryRun -IncludeOptional
+
+  退出码：
+    0  成功
+    2  没有找到任何东方游戏目录
+    3  找不到引擎脚本
+    4  PowerShell 版本过低，无法继续
+    5  自检发现关键能力不可用
+
+【目录结构】
+
+  Run.ps1                     启动引导（纯 ASCII，负责修复脚本编码后再交给主引擎）
+  TouhouRuntimeDoctor.ps1     主引擎
+  一键修复.bat / 仅体检.bat / 自检.bat / 设备信息.bat / 回滚.bat
+  VERSION.txt                 版本号（打包时读取）
+  lib\
+    PeInspector.ps1           纯 PowerShell 的 PE 解析器（位数 / 导入表 / DLL 字符串）
+    Common.ps1                日志、提权、备份回滚、位数映射、能力自检
+    Detect.ps1                数据采集（系统状态、依赖解析、VC/DirectX 取证）
+    Diagnose.ps1              判定层（把事实翻译成结论 + 严重级别 + 修复动作）
+    Repair.ps1                修复引擎（15 类动作，每个动作执行后验证）
+    SmokeTest.ps1             真机启动验证 + NTSTATUS 归因
+    Report.ps1                GBK 文本报告 + HTML 报告
+    SysInfo.ps1               设备与系统信息采集（17 个章节）
+    SysInfoReport.ps1         设备信息渲染（txt / 精简 / html / json）
+    DxComponents.ps1          DirectX 组件全清单 / 加速状态 / 系统目录部署
+    InputDiag.ps1             输入子系统诊断（键盘暴走专项）+ 原始快照导出
+  offline\
+    packages.json             载荷清单（能力、候选文件名、SHA256）
+    DirectX\ VCRedist\ DLL\ Fonts\ Tools\ Patches\
+  tools\
+    Fetch-OfflinePack.ps1     在联网机器上把载荷一次性下载到位
+    Check-Scripts.ps1         本项目专用静态检查器（编码 + 引号配对 + 语法）
+    Fix-Bom.ps1               强制脚本为 UTF-8 with BOM
+    Build-Package.ps1         打包成 lite / full 两个可分发压缩包
+    Complete-DirectXRepair.ps1 补全 DirectX Repair 缺失的数据文件
+  backup\<时间戳>\            每次运行的备份与回滚日志
+
+【给维护者：必须知道的工程约束与踩坑点】
+
+  1. 脚本必须保存为 UTF-8 with BOM。
+     Windows PowerShell 5.1 在中文系统上会把【无 BOM 的 UTF-8】按 GBK 解析，
+     中文注释与字符串会变乱码，而且中文出现在字符串里时会直接破坏语法。
+     改动任何 .ps1 之后请跑一次：tools\Fix-Bom.ps1
+
+  2. PowerShell 的普通字符串不能跨行。
+     写长段中文说明时很容易出现"双引号里嵌了未转义的引号"或漏掉收尾引号，
+     而 PowerShell 报出的行号常常指在几百行之后。
+     改动之后请跑：tools\Check-Scripts.ps1（用状态机定位到真正出错的那一行）
+
+  3. 位数 -> 系统目录的映射只能有一处实现，统一走 Get-TrdSystemDir。
+     在任何地方硬编码 SysWOW64 都会在 32 位 Windows 上出错，而且是不报异常的
+     静默错误：所有组件检查集体报缺失，把健康机器判成需要大修。
+     同理，判断系统位数不能只看 PROCESSOR_ARCHITECTURE ——
+     64 位系统上跑 32 位 PowerShell 时它是 x86。
+
+  4. Get-ChildItem 的 -Include 与 -LiteralPath 组合不可靠，会退化成返回全部文件。
+     必须显式用 Where-Object 过滤扩展名。
+
+  5. Start-Process -ArgumentList 传数组时不会给含空格的元素加引号，
+     命令会被静默截断。统一用 ConvertTo-TrdArgString 拼接。
+     另外 Start-Process -PassThru 读 ExitCode 有竞态，会抛"进程已退出"；
+     需要退出码时用 Invoke-TrdProcess。
+
+  6. @(Get-Content x.json -Raw | ConvertFrom-Json) 是错的。
+     ConvertFrom-Json 把顶层数组当作单个对象写进管道，@() 不会递归展开，
+     于是属性访问全部错位。用 ConvertFrom-TrdJsonArray。
+
+  7. Registry::HKCU:\... 是无效路径（该前缀只认 Registry::HKEY_CURRENT_USER\...）。
+     注册表值名里的方括号会被 PowerShell cmdlet 当通配符，
+     含方括号的值名（游戏路径里就有）必须用 .NET RegistryKey API 读写。
+
+  8. 回滚注册表不能只靠 reg export/import。
+     reg import 只合并覆盖，删不掉新增值。必须逐值记录修改前状态
+     （RegValue 日志条目：原本没有就删除，原本存在就写回原值原类型）。
+
+  9. 新增 PowerShell 5 专有 cmdlet 时必须同时加降级实现。
+     目前 -Depth / Expand-Archive / Get-FileHash / Get-CimInstance 都有兜底，
+     见 Get-TrdChildDirectory / Expand-TrdArchive / Get-TrdFileHashSafe /
+      Get-TrdWmiObject。新增同类 cmdlet 时请照做，
+     并在 Invoke-TrdSelfTest 里补一条自检项。
+
+================================================================================

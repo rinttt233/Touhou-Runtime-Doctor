@@ -97,7 +97,13 @@ function Copy-ToolTree {
         [switch]$IncludePayload
     )
 
+    # 这里必须与代码实际使用的载荷目录保持一致。
+    # DxComponents.ps1 的 Get-TrdDxPayloadSource 找的是 offline\DX_DLL\x86|x64，
+    # 而这份清单早期只写了 offline\DirectX —— 两者不一致的后果很严重：
+    # lite 包会把将近 190 MB 的 DirectX DLL 一起打进去，完全违背
+    # "lite = 仅工具本体"的约定，而体积异常又很容易被忽略。
     $payloadDirs = @(
+        (Join-Path $ToolRoot 'offline\DX_DLL'),
         (Join-Path $ToolRoot 'offline\DirectX'),
         (Join-Path $ToolRoot 'offline\VCRedist'),
         (Join-Path $ToolRoot 'offline\Tools'),
@@ -194,18 +200,25 @@ $readmeLines = @(
     '      首次使用前先跑 tools\Fetch-OfflinePack.ps1 把运行库抓下来。',
     '',
     "  $pkgName-full.zip",
-    '      含完整离线载荷（约 200 MB），包括 DirectX 2010 年 6 月完整运行库、',
-    '      VC++ 2005~2022 的 x86/x64 安装包、dgVoodoo2、Locale Emulator。',
+    '      含离线载荷（约 320 MB）：',
+    '        - VC++ 2005~2022 的 x86/x64 安装包 12 个',
+    '        - DirectX 组件 DLL 的 x86 与 x64 两套（各 92 个）',
     '      用于：目标机器完全离线。拷过去解压就能修，全程不联网。',
+    '      不含：DirectX Jun2010 官方自解压包、dgVoodoo2、Locale Emulator',
+    '            （这三项属可选增强，需要时请自行放进 offline\）。',
     '',
     '【与 GitHub 公开版的区别】',
     '',
     '  公开仓库 https://github.com/rinttt233/Touhou-Runtime-Doctor 收录的是',
-    '  「不含离线载荷」的公开源码版：既不含 offline\ 里的各类运行库，',
-    '  也不含可自动联网下载的 tools\Fetch-OfflinePack.ps1。',
-    '  而本目录下的 lite/full 压缩包是【本地构建产物】，里面保留了该抓取',
-    '  脚本，方便你在能联网的机器上准备载荷。请不要把这两个压缩包原样发布，',
-    '  否则就等于把"可自动联网下载"的能力一起分发出去了。',
+    '  「不含离线载荷」的公开源码版：不含 offline\ 里的各类运行库，',
+    '  也不含任何可自动联网下载的脚本（含 tools\Fetch-OfflinePack.ps1）。',
+    '  本目录下的 lite/full 压缩包是【本地构建产物】：',
+    '    lite 仅工具本体；full 另含上面那份 offline\ 载荷，',
+    '    可拷到完全离线的机器上直接使用。',
+    '  说明：tools\Fetch-OfflinePack.ps1 是"有网络时自动抓取载荷"的脚本，',
+    '    按公开版定位不予收录，本目录中同样不存在。',
+    '    需要补载荷时，请手工把安装包放进 offline\，',
+    '    文件名与 offline\packages.json 里各包的 Files 一致即可被自动识别。',
     '',
     '【怎么用】',
     '',

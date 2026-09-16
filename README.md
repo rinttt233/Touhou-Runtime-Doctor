@@ -1,3 +1,5 @@
+# 本项目代码部分由AI完成
+我只会C++
 # 东方 Project 运行环境医生 (Touhou Runtime Doctor)
 
 一个给 Windows 用的**离线、免安装、可回滚**的东方 Project 运行环境体检与修复工具。

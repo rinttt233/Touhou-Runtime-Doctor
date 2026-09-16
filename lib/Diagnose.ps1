@@ -891,7 +891,9 @@ function Invoke-TrdDiagnosis {
     #  过滤驱动 / 重映射 / 设备枚举 / DirectInput 配置 / 注入软件 / 显示时序。
     # =======================================================================
     $inp = $null
-    try { $inp = Get-TrdInputDiagnostics -GameFolder $Game.Folder } catch { }
+    $inpErr = ''
+    try { $inp = Get-TrdInputDiagnostics -GameFolder $Game.Folder }
+    catch { $inpErr = $_.Exception.Message }
 
     if ($inp) {
         # --- IME：最高发 ---
@@ -1065,6 +1067,20 @@ function Invoke-TrdDiagnosis {
                     -Evidence @("刷新率: $($inp.Timing.RefreshHz)Hz", $fpsNote, "Vsync=$($inp.Timing.VpatchVsync) SleepType=$($inp.Timing.VpatchSleep)"))
             }
         }
+    } else {
+        # 这里刻意不做静默跳过。之前写成 try{...}catch{} + if($inp)，
+        # 一旦诊断抛异常，整个「输入子系统」分类会从报告里消失，
+        # 用户会读成"没有输入问题"——而实际上这项检查压根没跑成。
+        # 键盘暴走是本工具的重点专项，它的失败必须可见。
+        if (-not $inpErr) { $inpErr = '输入诊断返回了空结果' }
+        & $add (New-TrdFinding -Id 'INPUT_DIAG_FAILED' -Category '输入子系统' -Severity 'Medium' `
+            -Title '输入子系统诊断未能完成' `
+            -Detail ('本次无法采集键盘/鼠标相关状态，因此"键盘暴走"相关的全部检查项都没有结论。' +
+                     '这不代表机器没有问题，只代表这次没查成 —— 请不要把这一条当成"通过"。') `
+            -Evidence @("错误信息: $inpErr",
+                        "游戏目录: $($Game.Folder)",
+                        '可尝试以管理员身份重跑；若仍失败，请把上面这条错误信息一并反馈') `
+            -FixId $null -FixHint '以管理员身份重跑；仍失败请反馈上面的错误信息')
     }
 
     # =======================================================================

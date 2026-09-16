@@ -256,6 +256,20 @@ function Install-TrdPackage {
                     $cand = Join-Path $OfflineRoot $rel
                     if (Test-Path -LiteralPath $cand) { $dxDir = Split-Path -Parent $cand; break }
                 }
+                # 约定位置：Fetch-OfflinePack.ps1 -ExtractDirectX 会把官方运行库解到这里。
+                # 注意【不能】把解出的 DXSETUP.exe 写进清单的 Files —— 一个包只有一个
+                # Sha256 字段，那个哈希描述的是【下载下来的归档】。一旦解包完成，
+                # 查找会先命中解出的小文件（约 506 KB）再拿它跟归档哈希（95 MB 那个）比，
+                # 于是必然报"哈希不符"，接着 Install-TrdPackage 会按设计中止安装，
+                # 等于官方 DirectX 安装路径被自己的安全校验挡死。
+                # 所以解包产物不进清单，改在这里按约定位置探测。
+                if (-not $dxDir) {
+                    $conv = Join-Path $OfflineRoot 'DirectX\dxsetup'
+                    if (Test-Path -LiteralPath (Join-Path $conv 'DXSETUP.exe')) {
+                        $dxDir = $conv
+                        Write-TrdLog "使用已解包的 DirectX 运行库目录: $conv" 'Detail'
+                    }
+                }
                 if (-not $dxDir) {
                     $tmp = Join-Path $env:TEMP ('trd_dx_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
                     $dxDir = Expand-TrdRedistCabs -SelfExtractor $found.Path -DestDir $tmp

@@ -189,76 +189,428 @@ function Get-TrdRegUninstallEntries {
 # ---------------------------------------------------------------------------
 #  目标定位
 # ---------------------------------------------------------------------------
+function Get-TrdDefaultScanRoots {
+    <#
+    .SYNOPSIS
+        常见游戏位置（便宜、值得先扫的那几个）。
+    #>
+    [CmdletBinding()]
+    param()
+
+    $guess = New-Object System.Collections.ArrayList
+    foreach ($g in @('D:\game', 'E:\game', 'F:\game', 'C:\game',
+                     'D:\games', 'E:\games', 'F:\games',
+                     'D:\TouhouGames', 'D:\Touhou', 'D:\东方', 'D:\stg',
+                     'D:\Program Files', 'D:\PCGames', 'D:\Game',
+                     (Join-Path $env:USERPROFILE 'Desktop'),
+                     (Join-Path $env:USERPROFILE 'Documents'),
+                     (Join-Path $env:USERPROFILE 'Downloads'))) {
+        if ($g -and (Test-Path -LiteralPath $g)) { $null = $guess.Add($g) }
+    }
+    return @($guess | Select-Object -Unique)
+}
+
+function Get-TrdScanPruneList {
+    <#
+    .SYNOPSIS
+        搜索时直接跳过的目录名。
+    .DESCRIPTION
+        整盘搜索之所以慢，绝大多数时间花在这些树上：系统目录、程序目录、
+        用户配置、包缓存。它们不可能存放东方游戏，却在目录数上占绝对多数。
+        按【目录名】剪枝是最省事也最有效的过滤（不用先读属性、不用比路径）。
+    #>
+    [CmdletBinding()]
+    param()
+
+    return @(
+        'Windows', 'WinSxS', 'servicing', 'assembly', 'Microsoft.NET',
+        'Program Files', 'Program Files (x86)', 'ProgramData', 'MSOCache', 'Config.Msi',
+        '$Recycle.Bin', 'System Volume Information', 'Recovery', 'PerfLogs', 'Boot',
+        'AppData', 'Application Data', 'Local Settings',
+        'node_modules', '.git', '.svn', '.hg', '.vs', '__pycache__',
+        'Temp', 'tmp', 'Cache', 'Caches', 'Logs', 'Installer',
+        'WindowsApps', 'Packages', 'OneDrive', 'OneDriveTemp',
+        'System32', 'SysWOW64', 'drivers', 'Fonts', 'Inf'
+    )
+}
+
+function Find-TrdTouhouGamesEx {
+    <#
+    .SYNOPSIS
+        搜索东方 Project 游戏目录，并返回本次搜索的代价统计。
+    .DESCRIPTION
+        判定标准：目录中存在 <thXX>.exe（th06~th19，含 .5 小数作）。
+
+        与旧实现的三点区别，都是为了「别把时间浪费在无关目录上」：
+          1. 每个目录只列一次。旧实现是「先把所有子目录枚举出来，
+             再对每个目录单独列一次 th*.exe」，等于每个目录两次 I/O；
+             这里把「找子目录」和「找 th*.exe」合并成同一次列举。
+          2. 按名字剪枝（见 Get-TrdScanPruneList）。整盘搜索时这一步能省掉
+             绝大多数目录访问 —— 少访问一个目录就少一次系统调用。
+          3. 默认不再把每个固定磁盘整盘扫一遍。那件事代价最大，
+             改为由调用方在用户明确选择后才做（见 Select-TrdScanRoots）。
+    .PARAMETER Roots
+        起始搜索目录（用户选定或显式传入）。
+    .PARAMETER IncludeDefaultRoots
+        额外把常见游戏位置也纳入。
+    .PARAMETER IncludeAllFixedDrives
+        额外把每个固定磁盘根目录都纳入（最慢，需用户明确同意）。
+    .OUTPUTS
+        PSCustomObject: Games, Visited, Pruned, ElapsedMs, Roots, Truncated
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$Roots = @(),
+        [int]$MaxDepth = 3,
+        [string[]]$Prune = @(),
+        [switch]$IncludeDefaultRoots,
+        [switch]$IncludeAllFixedDrives,
+        [int]$MaxVisited = 0          # >0 时最多访问这么多目录（0 = 不限制）
+    )
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+    $rootList = New-Object System.Collections.ArrayList
+    $rootSeen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $addRoot = {
+        param([string]$r)
+        if (-not $r) { return }
+        if (-not (Test-Path -LiteralPath $r)) { return }
+        $full = $r
+        try { $full = (Resolve-Path -LiteralPath $r).Path } catch { }
+        if ($rootSeen.Add($full)) { $null = $rootList.Add($full) }
+    }
+    foreach ($r in $Roots) { & $addRoot $r }
+    if ($IncludeDefaultRoots) { foreach ($g in (Get-TrdDefaultScanRoots)) { & $addRoot $g } }
+    if ($IncludeAllFixedDrives) {
+        try {
+            foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+                if ($d.DriveType -eq 'Fixed' -and $d.IsReady) { & $addRoot $d.RootDirectory.FullName }
+            }
+        } catch { }
+    }
+
+    if (-not $Prune -or $Prune.Count -eq 0) { $Prune = Get-TrdScanPruneList }
+    $pruneSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in $Prune) { if ($p) { $null = $pruneSet.Add($p) } }
+
+    $visited = 0; $pruned = 0; $truncated = $false
+    $found = New-Object System.Collections.ArrayList
+    $seenDir = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($root in $rootList) {
+        $queue = New-Object System.Collections.Queue
+        $queue.Enqueue([PSCustomObject]@{ Dir = $root; Depth = 0 })
+
+        while ($queue.Count -gt 0) {
+            if ($MaxVisited -gt 0 -and $visited -ge $MaxVisited) { $truncated = $true; break }
+            $cur = $queue.Dequeue()
+            if (-not $seenDir.Add($cur.Dir)) { continue }
+            $visited++
+
+            # 一次列举同时满足两个目的：找 th*.exe、找下一层子目录
+            $items = @()
+            try { $items = @(Get-ChildItem -LiteralPath $cur.Dir -Force -ErrorAction SilentlyContinue) } catch { continue }
+
+            $exes = @($items | Where-Object { -not $_.PSIsContainer -and $_.Name -match '^th\d{2,3}\.exe$' })
+            if ($exes.Count -gt 0) {
+                $main = @($exes | Sort-Object { $_.Name.Length } | Select-Object -First 1)[0]
+                $id = [System.IO.Path]::GetFileNameWithoutExtension($main.Name)
+                $eng = 'unknown'; $disp = $id
+                if ($script:TH_ENGINE.ContainsKey($id)) {
+                    $eng = $script:TH_ENGINE[$id].Engine
+                    $disp = $script:TH_ENGINE[$id].Name
+                }
+                $vp = Join-Path $cur.Dir 'vpatch.exe'
+                $null = $found.Add([PSCustomObject]@{
+                    Id          = $id
+                    Folder      = $cur.Dir
+                    MainExe     = $main.FullName
+                    LauncherExe = $(if (Test-Path -LiteralPath $vp) { $vp } else { $null })
+                    Engine      = $eng
+                    DisplayName = $disp
+                    ExeCount    = $exes.Count
+                    FolderName  = (Split-Path -Leaf $cur.Dir)
+                })
+            }
+
+            # 深度语义与原实现对齐：MaxDepth=3 时检查到第 4 层目录
+            if ($cur.Depth -gt $MaxDepth) { continue }
+            foreach ($it in $items) {
+                if (-not $it.PSIsContainer) { continue }
+                if ($it.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+                if ($pruneSet.Contains($it.Name)) { $pruned++; continue }
+                $queue.Enqueue([PSCustomObject]@{ Dir = $it.FullName; Depth = ($cur.Depth + 1) })
+            }
+        }
+        if ($truncated) { break }
+    }
+
+    $sw.Stop()
+    return [PSCustomObject]@{
+        Games     = @($found | Sort-Object Id, Folder)
+        Visited   = $visited
+        Pruned    = $pruned
+        ElapsedMs = $sw.ElapsedMilliseconds
+        Roots     = @($rootList)
+        Truncated = $truncated
+    }
+}
+
 function Find-TrdTouhouGames {
     <#
     .SYNOPSIS
-        搜索本机上的东方 Project 游戏目录。
+        搜索本机上的东方 Project 游戏目录（返回游戏数组）。
     .DESCRIPTION
-        判定标准：目录中存在 <thXX>.exe（th06~th19，含 .5 小数作）。扫描范围：
-        指定路径 -> 工具所在盘 -> 常见游戏盘根目录下两层。
-    .PARAMETER ExtraRoots
-        额外的起始搜索目录。
+        对 Find-TrdTouhouGamesEx 的薄封装，保持原有调用方式可用。
+        注意默认行为已变更：不再默认整盘遍历 —— 那正是「浪费太多时间」的来源。
+        需要整盘搜索时显式加 -IncludeAllFixedDrives。
     #>
     [CmdletBinding()]
     param(
         [string[]]$ExtraRoots = @(),
-        [int]$MaxDepth = 3
+        [int]$MaxDepth = 3,
+        [string[]]$Prune = @(),
+        [switch]$IncludeDefaultRoots,
+        [switch]$IncludeAllFixedDrives
     )
 
-    $roots = New-Object System.Collections.ArrayList
-    foreach ($r in $ExtraRoots) { if ($r -and (Test-Path -LiteralPath $r)) { $null = $roots.Add($r) } }
+    $r = Find-TrdTouhouGamesEx -Roots $ExtraRoots -MaxDepth $MaxDepth -Prune $Prune `
+            -IncludeDefaultRoots:$IncludeDefaultRoots -IncludeAllFixedDrives:$IncludeAllFixedDrives
+    return @($r.Games)
+}
 
-    # 常见游戏根目录
-    $guess = @('D:\game', 'E:\game', 'C:\game', 'D:\games', 'E:\games',
-               "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Documents", "$env:USERPROFILE\Downloads")
-    foreach ($g in $guess) { if (Test-Path -LiteralPath $g) { $null = $roots.Add($g) } }
-    # 所有固定磁盘根目录
+# ---------------------------------------------------------------------------
+#  扫描范围的选择与记忆
+#
+#  "整盘遍历"是这个工具里最慢的一步，而且绝大多数机器上完全没必要。
+#  下面这几个函数负责：判断能不能安全提问、列出候选目录、记住用户的选择。
+# ---------------------------------------------------------------------------
+function Test-TrdCanPrompt {
+    <#
+    .SYNOPSIS
+        判断当前是否可以安全地向用户提问。
+    .DESCRIPTION
+        在输入被重定向（管道、计划任务、CI）时调用 Read-Host 会立刻返回空串
+        或直接卡住，所以必须先判断。Console.IsInputRedirected 是 .NET 4.5+
+        才有的属性，老框架上访问会抛异常 —— 用 try/catch 兜住。
+    #>
+    [CmdletBinding()]
+    param()
+
+    try { if (-not [Environment]::UserInteractive) { return $false } } catch { }
+    try { if ([Console]::IsInputRedirected) { return $false } } catch { }
+    return $true
+}
+
+function Get-TrdScanRootStorePath {
+    [CmdletBinding()]
+    param([string]$ToolRoot)
+    if (-not $ToolRoot) { $ToolRoot = $script:TRD.ToolRoot }
+    if (-not $ToolRoot) { return $null }
+    return (Join-Path $ToolRoot 'scan-roots.json')
+}
+
+function Get-TrdSavedScanRoots {
+    <#
+    .SYNOPSIS
+        读取上次记住的扫描目录（已剔除不存在的）。
+    #>
+    [CmdletBinding()]
+    param([string]$ToolRoot)
+
+    $p = Get-TrdScanRootStorePath -ToolRoot $ToolRoot
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { return @() }
+    try {
+        $j = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($j.PSObject.Properties.Name -notcontains 'Roots') { return @() }
+        return @(@($j.Roots) | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    } catch {
+        return @()
+    }
+}
+
+function Save-TrdScanRoots {
+    <#
+    .SYNOPSIS
+        记住用户选择的扫描目录，下次直接复用。
+    #>
+    [CmdletBinding()]
+    param([string[]]$Roots, [string]$ToolRoot)
+
+    $p = Get-TrdScanRootStorePath -ToolRoot $ToolRoot
+    if (-not $p) { return $false }
+    try {
+        $o = [ordered]@{
+            Version = 1
+            Updated = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            Roots   = @($Roots)
+        }
+        [System.IO.File]::WriteAllText($p, ($o | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function ConvertTo-TrdScanRootList {
+    <#
+    .SYNOPSIS
+        把用户给的 -ScanRoot 解析成一组真实存在的目录。
+    .DESCRIPTION
+        必须容忍三种写法，因为同一个参数在不同入口下会变成不同形态：
+          * 直接调用脚本：-ScanRoot "D:\game","E:\other"   得到数组；
+          * 经过 Run.ps1 或其它中间层：PowerShell 把数组传给原生进程时会
+            拼成一个以空格分隔的字符串，于是变成 "D:\game E:\other"；
+          * 手工书写：-ScanRoot "D:\game;E:\other"。
+        所以按 整体 -> 分号/逗号 -> 空白 的顺序逐级尝试，并且只接受
+        【真实存在】的路径 —— 带空格的路径会在「整体」那一步就命中，
+        不会被后面的空白拆分切坏。
+    .OUTPUTS
+        去重后的真实目录数组。
+    #>
+    [CmdletBinding()]
+    param([string[]]$Value)
+
+    $out = New-Object System.Collections.ArrayList
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $add = {
+        param([string]$p)
+        if (-not $p) { return }
+        $p = $p.Trim().Trim('"').Trim("'")
+        if (-not $p) { return }
+        if (-not (Test-Path -LiteralPath $p)) { return }
+        $full = $p
+        try { $full = (Resolve-Path -LiteralPath $p).Path } catch { }
+        if ($seen.Add($full)) { $null = $out.Add($full) }
+    }
+
+    $raw = @(@($Value) | Where-Object { $_ -and ([string]$_).Trim() })
+    if ($raw.Count -eq 0) { return @() }
+
+    foreach ($v in $raw) { & $add ([string]$v) }
+    foreach ($v in $raw) {
+        foreach ($piece in @([string]$v -split '[;,，；]')) { & $add $piece }
+    }
+    if ($out.Count -eq 0) {
+        foreach ($v in $raw) {
+            foreach ($piece in @([string]$v -split '\s+')) { & $add $piece }
+        }
+    }
+    return @($out)
+}
+
+function Select-TrdScanRoots {
+    <#
+    .SYNOPSIS
+        询问用户要搜索哪几个目录，避免把时间花在整盘遍历上。
+    .DESCRIPTION
+        调用前请先用 Test-TrdCanPrompt 确认可以提问。
+    .OUTPUTS
+        PSCustomObject: Action（roots|defaults|alldrives|none）, Roots, Remember
+    #>
+    [CmdletBinding()]
+    param([string]$ToolRoot)
+
+    $res = [PSCustomObject]@{ Action = 'defaults'; Roots = @(); Remember = $false }
+
+    # 候选：上次选择 > 常见位置；固定盘单独列在后面并标注"慢"
+    $cands = New-Object System.Collections.ArrayList
+    $tags  = New-Object System.Collections.ArrayList
+    $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($s in @(Get-TrdSavedScanRoots -ToolRoot $ToolRoot)) {
+        $full = $s; try { $full = (Resolve-Path -LiteralPath $s).Path } catch { }
+        if ($seen.Add($full)) { $null = $cands.Add($full); $null = $tags.Add('上次使用') }
+    }
+    foreach ($g in @(Get-TrdDefaultScanRoots)) {
+        $full = $g; try { $full = (Resolve-Path -LiteralPath $g).Path } catch { }
+        if ($seen.Add($full)) { $null = $cands.Add($full); $null = $tags.Add('常见位置') }
+    }
+    $drives = New-Object System.Collections.ArrayList
     try {
         foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
-            if ($d.DriveType -eq 'Fixed' -and $d.IsReady) { $null = $roots.Add($d.RootDirectory.FullName) }
+            if ($d.DriveType -eq 'Fixed' -and $d.IsReady) {
+                $r = $d.RootDirectory.FullName
+                if ($seen.Add($r)) { $null = $drives.Add($r) }
+            }
         }
     } catch { }
 
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $found = New-Object System.Collections.ArrayList
+    Write-Host ''
+    Write-Host '  为节省时间，请选择要搜索东方游戏的目录。' -ForegroundColor Cyan
+    Write-Host '  目录越少越快；选过的会被记住，下次直接回车即可。' -ForegroundColor DarkGray
+    Write-Host ''
 
-    foreach ($root in $roots) {
-        if (-not (Test-Path -LiteralPath $root)) { continue }
-        # 用 Get-TrdChildDirectory 而不是 Get-ChildItem -Depth：
-        # -Depth 是 PowerShell 5.0 才有的参数，Win7 默认的 PS2 / WMF3 上会
-        # 直接报"找不到与参数名称 Depth 匹配的参数"。
-        $dirs = Get-TrdChildDirectory -Path $root -MaxDepth $MaxDepth
-        foreach ($d in @($dirs)) {
-            if (-not $seen.Add($d.FullName)) { continue }
-            $exes = @(Get-ChildItem -LiteralPath $d.FullName -File -Filter 'th*.exe' -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -match '^(th\d{2,3})\.exe$' })
-            if ($exes.Count -eq 0) { continue }
-
-            $main = $exes | Where-Object { $_.Name -notmatch '^(custom|replayview)$' } |
-                    Sort-Object { $_.Name.Length } | Select-Object -First 1
-            $id = [System.IO.Path]::GetFileNameWithoutExtension($main.Name)
-
-            $eng = 'unknown'; $disp = $id
-            if ($script:TH_ENGINE.ContainsKey($id)) {
-                $eng = $script:TH_ENGINE[$id].Engine
-                $disp = $script:TH_ENGINE[$id].Name
-            }
-
-            $null = $found.Add([PSCustomObject]@{
-                Id          = $id
-                Folder      = $d.FullName
-                MainExe     = $main.FullName
-                LauncherExe = $(if (Test-Path -LiteralPath (Join-Path $d.FullName 'vpatch.exe')) { Join-Path $d.FullName 'vpatch.exe' } else { $null })
-                Engine      = $eng
-                DisplayName = $disp
-                ExeCount    = $exes.Count
-                FolderName  = $d.Name
-            })
-        }
+    $idx = @{}
+    $n = 0
+    foreach ($c in $cands) {
+        $n++; $idx[[string]$n] = $c
+        Write-Host ('   {0,2}) {1,-56} {2}' -f $n, $c, ('[' + $tags[$n - 1] + ']')) -ForegroundColor Gray
+    }
+    foreach ($d in $drives) {
+        $n++; $idx[[string]$n] = $d
+        Write-Host ('   {0,2}) {1,-56} [整个盘 · 慢]' -f $n, $d) -ForegroundColor DarkYellow
     }
 
-    return @($found | Sort-Object Id)
+    Write-Host ''
+    Write-Host '   1,3 = 按编号多选   a = 上面全部（最慢）   c = 自己输入路径' -ForegroundColor Gray
+    Write-Host '   n = 不搜索（自己用 -GamePath 指定）   回车 = 只扫「常见位置」' -ForegroundColor Gray
+    Write-Host ''
+
+    $ans = ''
+    try { $ans = [string](Read-Host '  请选择') } catch { $ans = '' }
+    $ans = $ans.Trim()
+
+    if ($ans -eq '') { $res.Action = 'defaults'; return $res }
+    if ($ans -match '^(?i)a$') { $res.Action = 'alldrives'; return $res }
+    if ($ans -match '^(?i)n$') { $res.Action = 'none'; return $res }
+
+    if ($ans -match '^(?i)c') {
+        Write-Host '  请粘贴目录路径，多个用分号或逗号分隔：' -ForegroundColor Gray
+        $raw = ''
+        try { $raw = [string](Read-Host '  路径') } catch { $raw = '' }
+        $picked = New-Object System.Collections.ArrayList
+        $bad = New-Object System.Collections.ArrayList
+        foreach ($piece in @($raw -split '[;,，；]')) {
+            $p = ([string]$piece).Trim().Trim('"')
+            if (-not $p) { continue }
+            if (Test-Path -LiteralPath $p) {
+                $full = $p; try { $full = (Resolve-Path -LiteralPath $p).Path } catch { }
+                if (-not $picked.Contains($full)) { $null = $picked.Add($full) }
+            } else {
+                $null = $bad.Add($p)
+            }
+        }
+        foreach ($b in $bad) { Write-Host ("  跳过（不存在）: $b") -ForegroundColor Yellow }
+        if ($picked.Count -eq 0) {
+            Write-Host '  没有有效目录，改为只扫常见位置。' -ForegroundColor Yellow
+            $res.Action = 'defaults'; return $res
+        }
+        $res.Action = 'roots'; $res.Roots = @($picked); $res.Remember = $true
+        return $res
+    }
+
+    # 按编号选择
+    $picked = New-Object System.Collections.ArrayList
+    foreach ($piece in @($ans -split '[,，、\s]+')) {
+        $k = ([string]$piece).Trim()
+        if (-not $k) { continue }
+        if ($idx.ContainsKey($k)) {
+            $v = $idx[$k]
+            if (-not $picked.Contains($v)) { $null = $picked.Add($v) }
+        } else {
+            Write-Host ("  忽略无效编号: $k") -ForegroundColor Yellow
+        }
+    }
+    if ($picked.Count -eq 0) {
+        Write-Host '  没有有效选择，改为只扫「常见位置」。' -ForegroundColor Yellow
+        $res.Action = 'defaults'; return $res
+    }
+    $res.Action = 'roots'; $res.Roots = @($picked); $res.Remember = $true
+    return $res
 }
+
 
 # ---------------------------------------------------------------------------
 #  VC 运行库状态

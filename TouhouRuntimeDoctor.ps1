@@ -30,6 +30,12 @@ param(
     # DirectX Repair 的 Data 目录（可选）。指定后可直接复用它的 DLL 库作为部署来源。
     [string]$DirectXRepairDataRoot,
 
+    # 只在这些目录里搜索游戏。不给就会询问用户（见 -NoScanPrompt）。
+    # 整盘遍历是本工具最慢的一步，显式指定能省掉大量时间。
+    [string[]]$ScanRoot,
+    [switch]$NoScanPrompt,           # 不问，直接按默认范围（常见位置）搜索
+    [int]$ScanDepth = 3,             # 搜索深度
+
     [switch]$All,                    # 等价于 Mode=Auto
     [switch]$IncludeOptional,        # 一并补齐整机缺失的 VC 运行库、加 Defender 排除
     [switch]$IncludeRisky,           # 允许执行改变渲染/区域/路径的动作
@@ -288,13 +294,62 @@ Write-TrdLog "离线载荷  : $(if (Test-TrdOfflineAvailable) { '已就绪' } el
 
 # ---------------------------------------------------------------------------
 #  查找游戏
+#
+#  整盘遍历是本工具最慢的一步，而绝大多数机器上完全没必要 —— 真正存游戏的
+#  往往只有一两个目录。所以默认先问用户要扫哪几个目录，并把选择记住；
+#  只有用户明确选择"全部"时才整盘扫描。非交互环境则走便宜的那条路。
 # ---------------------------------------------------------------------------
-Write-TrdLog ''
-Write-TrdLog '正在搜索本机的东方 Project 游戏 ...' 'Step'
+$searchRoots     = @()
+$useDefaultRoots = $false
+$scanAllDrives   = $false
+$skipSearch      = $false
 
-$searchRoots = @()
-if ($GamePath) { $searchRoots += $GamePath }
-$games = @(Find-TrdTouhouGames -ExtraRoots $searchRoots)
+# -ScanRoot 在不同入口下会以数组或"空格拼起来的单个字符串"到达，
+# 这里统一解析成真实存在的目录；一个都解析不出来时给出警告并退回默认范围，
+# 免得用户以为"我明明指定了目录"，工具却什么都没扫。
+$givenRoots = @(ConvertTo-TrdScanRootList -Value $ScanRoot)
+if ($ScanRoot -and @($ScanRoot).Count -gt 0 -and @($givenRoots).Count -eq 0) {
+    Write-TrdLog '警告：-ScanRoot 里没有一个是有效目录，将改用默认范围搜索。' 'Warn'
+}
+
+if ($GamePath) {
+    # 已经指明位置，不必再猜，也不必问
+    $searchRoots = @($GamePath)
+} elseif (@($givenRoots).Count -gt 0) {
+    # 命令行显式指定（已经过容错解析，见 ConvertTo-TrdScanRootList）
+    $searchRoots = @($givenRoots)
+} elseif (-not $NoScanPrompt -and (Test-TrdCanPrompt)) {
+    $pick = Select-TrdScanRoots -ToolRoot $script:TRD.ToolRoot
+    switch ($pick.Action) {
+        'roots'     { $searchRoots = @($pick.Roots) }
+        'alldrives' { $scanAllDrives = $true }
+        'none'      { $skipSearch = $true }
+        default     { $useDefaultRoots = $true }
+    }
+    if ($pick.Remember -and @($pick.Roots).Count -gt 0) {
+        if (Save-TrdScanRoots -Roots @($pick.Roots) -ToolRoot $script:TRD.ToolRoot) {
+            Write-TrdLog '已记住这次的扫描目录，下次直接回车即可复用。' 'Detail'
+        }
+    }
+} else {
+    # 非交互环境（管道、计划任务、加了 -NoScanPrompt）：只扫常见位置，不整盘扫
+    $useDefaultRoots = $true
+}
+
+if ($skipSearch) {
+    $games = @()
+    Write-TrdLog '已按你的选择跳过目录搜索。' 'Info'
+} else {
+    Write-TrdLog ''
+    Write-TrdLog '正在搜索本机的东方 Project 游戏 ...' 'Step'
+    $scan = Find-TrdTouhouGamesEx -Roots $searchRoots -MaxDepth $ScanDepth `
+                -IncludeDefaultRoots:$useDefaultRoots -IncludeAllFixedDrives:$scanAllDrives
+    $games = @($scan.Games)
+    # 把"这次搜索花了多少代价"明确说出来：用户才能判断要不要缩小范围
+    Write-TrdLog ("搜索完成：访问 $($scan.Visited) 个目录，按名字跳过 $($scan.Pruned) 个无关目录，" +
+                  "用时 $([math]::Round($scan.ElapsedMs / 1000, 1)) 秒。") 'Detail'
+    if ($scan.Truncated) { Write-TrdLog '已达本次访问上限，搜索结果可能不完整。' 'Warn' }
+}
 
 if ($games.Count -eq 0 -and $GamePath -and (Test-Path -LiteralPath (Join-Path $GamePath 'th08.exe'))) {
     # 用户直接指了个游戏目录但不符合命名规则，仍尝试按目录处理
@@ -307,10 +362,29 @@ if ($games.Count -eq 0 -and $GamePath -and (Test-Path -LiteralPath (Join-Path $G
     })
 }
 
+# 用便宜范围没找到时不要直接放弃：问一句要不要整盘找一次。
+# 否则用户按了回车（只扫常见位置）却没找到，只能自己重跑一遍 —— 那才是真浪费时间。
+if ($games.Count -eq 0 -and -not $skipSearch -and -not $scanAllDrives -and -not $GamePath `
+        -and -not $NoScanPrompt -and (Test-TrdCanPrompt)) {
+    Write-Host ''
+    Write-Host '  在常见位置里没有找到东方游戏。' -ForegroundColor Yellow
+    $goAll = ''
+    try { $goAll = [string](Read-Host '  要不要把所有磁盘整盘搜索一遍？会慢一些 (y/N)') } catch { $goAll = '' }
+    if ($goAll -match '^(?i)y') {
+        Write-TrdLog '正在整盘搜索，请稍候 ...' 'Step'
+        $scan2 = Find-TrdTouhouGamesEx -IncludeDefaultRoots -IncludeAllFixedDrives -MaxDepth $ScanDepth
+        $games = @($scan2.Games)
+        Write-TrdLog ("整盘搜索完成：访问 $($scan2.Visited) 个目录，" +
+                      "用时 $([math]::Round($scan2.ElapsedMs / 1000, 1)) 秒。") 'Detail'
+    }
+}
+
 if ($games.Count -eq 0) {
     Write-TrdLog '没有找到任何东方 Project 游戏目录。' 'Error'
     Write-TrdLog '请用 -GamePath 显式指定游戏所在目录，例如：' 'Info'
     Write-TrdLog '  powershell -ExecutionPolicy Bypass -File TouhouRuntimeDoctor.ps1 -GamePath "D:\game\[th08] 东方永夜抄"' 'Info'
+    Write-TrdLog '或者用 -ScanRoot 只在你指定的几个目录里找（比整盘快得多）：' 'Info'
+    Write-TrdLog '  -ScanRoot "D:\game","E:\download\东方STG及工具合集"' 'Info'
     if (-not $NoPause) { Write-Host ''; Write-Host '按回车键退出 ...' -ForegroundColor DarkGray; [void](Read-Host) }
     exit 2
 }

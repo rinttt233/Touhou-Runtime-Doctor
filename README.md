@@ -75,6 +75,46 @@ powershell -ExecutionPolicy Bypass -File tools\Fetch-OfflinePack.ps1 -All     # 
 powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode Auto -GamePath "D:\game\[th08] 东方永夜抄 (汉)"
 ```
 
+### 搜索范围：会先问你要扫哪几个目录
+
+"把所有磁盘整盘遍历一遍"是这个工具里最慢的一步，而多数机器上完全没必要 ——
+真正放游戏的往往只有一两个目录。所以第一次运行时会先列出候选目录让你挑：
+
+```
+  为节省时间，请选择要搜索东方游戏的目录。
+  目录越少越快；选过的会被记住，下次直接回车即可。
+
+   1) D:\game                                  [常见位置]
+   2) C:\Users\你\Desktop                       [常见位置]
+   3) C:\Users\你\Downloads                     [常见位置]
+   4) C:\                                       [整个盘 · 慢]
+   5) D:\                                       [整个盘 · 慢]
+
+   1,3 = 按编号多选   a = 上面全部（最慢）   c = 自己输入路径
+   n = 不搜索（自己用 -GamePath 指定）   回车 = 只扫「常见位置」
+```
+
+- 选过的目录会记在 `scan-roots.json`（与你的机器绑定，不会上传），下次直接回车复用。
+- 如果只扫常见位置没找到游戏，会再问一句要不要整盘搜一次，不用自己重跑。
+- 每次搜索结束后会打印**访问了多少目录、跳过多少、用了多少秒**，让代价可见。
+
+不想被问的话：
+
+```powershell
+# 只在指定目录里找（最快）
+powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode Auto -ScanRoot "D:\game;E:\download\东方STG及工具合集"
+
+# 不问，只扫常见位置
+powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode Auto -NoScanPrompt
+
+# 不问，直接指定某一份游戏
+powershell -ExecutionPolicy Bypass -File Run.ps1 -Mode Auto -GamePath "D:\game\[th08] 东方永夜抄 (汉)"
+```
+
+搜索时还会**按目录名剪枝**，直接跳过 `Windows`、`Program Files`、`AppData`、
+`node_modules`、`$Recycle.Bin` 等不可能放游戏的树。实测同一条 `C:\` 搜索：
+不剪枝访问 30,000 个目录用 46.5 秒（还没跑完），剪枝后只用 0.4 秒。
+
 ---
 
 ## 环境要求

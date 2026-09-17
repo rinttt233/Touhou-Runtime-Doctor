@@ -16,3 +16,6 @@ dist/
 
 # ── 打包产物：由 tools\Build-Package.ps1 生成在发布树里 ──
 打包说明.txt
+
+# ── 记住的扫描目录（与具体机器绑定，本机使用即可）──
+scan-roots.json

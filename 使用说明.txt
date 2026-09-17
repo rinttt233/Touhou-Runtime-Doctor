@@ -236,7 +236,7 @@
 
   目标机器上校验完整性：
 
-    Get-FileHash TouhouRuntimeDoctor-1.0.0-full.zip -Algorithm SHA256
+    Get-FileHash TouhouRuntimeDoctor-*-full.zip -Algorithm SHA256
     （与 SHA256SUMS.txt 中的值比对）
 
 【在 32 位系统上（Windows 7 32 位 / 任何 x86 Windows）】

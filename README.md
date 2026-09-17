@@ -284,4 +284,4 @@ MIT License，见 `LICENSE`。
 
 ## 版本
 
-`1.0.0`（见 `VERSION.txt`）
+`1.0.1`（见 `VERSION.txt`）

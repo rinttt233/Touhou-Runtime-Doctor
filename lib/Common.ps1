@@ -10,7 +10,7 @@ Set-StrictMode -Version 2.0
 #  全局状态（由主引擎初始化）
 # ---------------------------------------------------------------------------
 $script:TRD = [PSCustomObject]@{
-    ToolVersion   = '1.0.0'    # 由 VERSION.txt 覆盖
+    ToolVersion   = '1.0.1'    # 由 VERSION.txt 覆盖
     ToolRoot      = $null      # 工具根目录
     OfflineRoot   = $null      # 离线载荷目录
     BackupRoot    = $null      # 备份根目录

@@ -1,4 +1,4 @@
-# 本项目代码部分由AI完成
+# 本项目代码部分全部由AI完成
 我只会C++
 # 东方 Project 运行环境医生 (Touhou Runtime Doctor)
 
